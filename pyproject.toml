@@ -1,0 +1,54 @@
+[project]
+name = "goit-pyweb-hw-11"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Bomber99-debug",email = "andreyrybchenko16@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "black (>=26.3.1,<27.0.0)",
+    "ruff (>=0.15.7,<0.16.0)",
+    "mypy (>=1.19.1,<2.0.0)",
+    "pre-commit (>=4.5.1,<5.0.0)"
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = ["build", "dist", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+exclude = ["build", "dist"]
