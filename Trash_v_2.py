@@ -4,6 +4,31 @@ from argparse import Namespace
 from collections.abc import Callable, Generator
 from concurrent import futures
 from pathlib import Path
+from threading import RLock
+
+lock = RLock()
+
+
+class VerboseTask:
+    def __init__(self, coun: int = 0, err: int = 0):
+        self.__counter = coun
+        self.__error = err
+
+    @property
+    def counter(self) -> int:
+        return self.__counter
+
+    @counter.setter
+    def counter(self, count: int) -> None:
+        self.__counter += count
+
+    @property
+    def error(self) -> int:
+        return self.__error
+
+    @error.setter
+    def error(self, err: int) -> None:
+        self.__error += err
 
 
 def parse_positive_int(value: str) -> int:
@@ -99,20 +124,24 @@ def iter_files(
                 yield entry
 
 
-def copy_file(file_task: tuple[Path, Path]) -> None:
+def copy_file(file_task: tuple[Path, Path], obj: VerboseTask) -> None:
     """Створює цільову директорію та копіює файл у фінальний шлях."""
     source_file, destination_file = file_task
 
     destination_file.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_file, destination_file)
+    with lock:
+        obj.counter = 1
 
 
-def move_file(file_task: tuple[Path, Path]) -> None:
+def move_file(file_task: tuple[Path, Path], obj: VerboseTask) -> None:
     """Створює цільову директорію та переміщує файл у фінальний шлях."""
     source_file, destination_file = file_task
 
     destination_file.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(source_file, destination_file)
+    with lock:
+        obj.counter = 1
 
 
 def build_destination_path(source_file: Path, target_root: Path) -> Path:
@@ -177,7 +206,7 @@ def build_file_task(
 def main() -> None:
     args = parse_args()
 
-    file_operations: dict[str, Callable[[tuple[Path, Path]], None]] = {
+    file_operations: dict[str, Callable[[tuple[Path, Path], VerboseTask], None]] = {
         "copy": copy_file,
         "move": move_file,
     }
@@ -188,12 +217,16 @@ def main() -> None:
         list(args.blacklist) if args.blacklist else None
     )
 
+    verbose_task = VerboseTask()
+
     reserved_paths: set[Path] = (
         collect_reserved_paths(target_root) if target_root.is_dir() else set()
     )
 
     max_workers: int = args.workers
-    selected_operation: Callable[[tuple[Path, Path]], None] = file_operations[args.mode]
+    selected_operation: Callable[[tuple[Path, Path], VerboseTask], None] = (
+        file_operations[args.mode]
+    )
 
     with futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         for source_file in iter_files(source_root, target_root, blacklist_extensions):
@@ -205,7 +238,12 @@ def main() -> None:
 
             # submit запускає задачу в пулі потоків.
             # Поки що futures не зберігаються і результати не перевіряються.
-            executor.submit(selected_operation, file_task)
+            executor.submit(selected_operation, file_task, verbose_task)
+
+    print(
+        f"Файлів сокпійовано/переміщено: {verbose_task.counter}\n"
+        f"Помилок при копіювані: {verbose_task.error}"
+    )
 
 
 if __name__ == "__main__":
