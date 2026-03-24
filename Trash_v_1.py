@@ -73,7 +73,8 @@ def build_copy_plan(
                 break
 
             counter += 1
-
+    for i in copy_plan:
+        print(i)
     return copy_plan
 
 
