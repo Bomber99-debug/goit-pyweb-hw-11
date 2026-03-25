@@ -1,12 +1,22 @@
 import argparse
 import logging
 import shutil
+import time
 from argparse import Namespace
 from collections.abc import Callable, Generator
 from concurrent import futures
 from pathlib import Path
 from queue import Queue
-from threading import RLock, Thread
+from threading import Event, RLock, Thread
+
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TaskID,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 log_queue: Queue[str | None] = Queue()
 verbose_queue: Queue[tuple[Path, Path] | None] = Queue()
@@ -293,6 +303,34 @@ def write_error_log() -> None:
         logging.error(message)
 
 
+def show_progress(
+    progress: Progress,
+    task_id: TaskID,
+    stats: TaskStats,
+    total_files: int,
+    stop_event: Event,
+) -> None:
+    while not stop_event.is_set():
+        with lock:
+            done = stats.counter + stats.error
+            errors = stats.error
+
+        progress.update(
+            task_id, completed=done, description=f"Обробка | Помилок: {errors}"
+        )
+
+        if done >= total_files:
+            break
+
+        time.sleep(0.1)
+
+    with lock:
+        done = stats.counter + stats.error
+        errors = stats.error
+
+    progress.update(task_id, completed=done, description=f"Обробка | Помилок: {errors}")
+
+
 def main() -> None:
     logging.basicConfig(
         filename="logging.log",
@@ -340,23 +378,55 @@ def main() -> None:
         [tuple[Path, Path], TaskStats, Path, Path, bool], None
     ] = file_operations[args.mode]
 
-    with futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for source_file in iter_files(source_root, target_root, blacklist_extensions):
-            file_task = build_file_task(
-                source_file=source_file,
-                target_root=target_root,
-                reserved_paths=reserved_paths,
-            )
+    total_files = sum(
+        1 for _ in iter_files(source_root, target_root, blacklist_extensions)
+    )
+    stop_event = Event()
 
-            # Запускає копіювання або переміщення файла у пулі потоків.
-            executor.submit(
-                selected_operation,
-                file_task,
-                stats,
-                source_root,
-                target_root,
-                verbose,
-            )
+    with Progress(
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        transient=False,
+    ) as progress:
+        task_id = progress.add_task("Обробка | Помилок: 0", total=total_files)
+
+        progress_thread = Thread(
+            target=show_progress,
+            args=(progress, task_id, stats, total_files, stop_event),
+            daemon=True,
+        )
+        progress_thread.start()
+
+        with futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            submitted_futures: list[futures.Future[None]] = []
+
+            for source_file in iter_files(
+                source_root, target_root, blacklist_extensions
+            ):
+                file_task = build_file_task(
+                    source_file=source_file,
+                    target_root=target_root,
+                    reserved_paths=reserved_paths,
+                )
+
+                future = executor.submit(
+                    selected_operation,
+                    file_task,
+                    stats,
+                    source_root,
+                    target_root,
+                    verbose,
+                )
+                submitted_futures.append(future)
+
+            for future in submitted_futures:
+                future.result()
+
+        stop_event.set()
+        progress_thread.join()
 
     log_queue.put(None)
     log_thread.join()
