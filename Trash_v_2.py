@@ -12,6 +12,12 @@ log_queue: Queue[str | None] = Queue()
 verbose_queue: Queue[tuple[Path, Path] | None] = Queue()
 lock = RLock()
 
+COMPOUND_SUFFIXES = {
+    (".tar", ".gz"),
+    (".tar", ".bz2"),
+    (".tar", ".xz"),
+}
+
 
 class TaskStats:
     """Зберігає кількість оброблених файлів і кількість помилок."""
@@ -49,12 +55,15 @@ def parse_positive_int(value: str) -> int:
     return number
 
 
-def normalize_suffix(value: str | list[str]) -> str:
-    """Нормалізує розширення: нижній регістр без крапки."""
-    if not isinstance(value, str):
-        value = "".join(value)
-
+def normalize_suffix(value: str) -> str:
     return value.lower().lstrip(".")
+
+
+def get_suffix(file_path: Path) -> str:
+    if tuple(file_path.suffixes) in COMPOUND_SUFFIXES:
+        return normalize_suffix("".join(file_path.suffixes))
+
+    return normalize_suffix(file_path.suffix)
 
 
 def validate_source_dir(value: str) -> Path:
@@ -131,9 +140,12 @@ def iter_files(
         if entry == target_root or entry.is_symlink():
             continue
         elif entry.is_dir():
-            yield from iter_files(entry, target_root, blacklist_extensions)
+            try:
+                yield from iter_files(entry, target_root, blacklist_extensions)
+            except OSError as error:
+                log_queue.put(f"{error} - read dir: {entry}")
         else:
-            entry_suffix = normalize_suffix(entry.suffixes)
+            entry_suffix = get_suffix(entry)
             if blacklist_extensions and entry_suffix in blacklist_extensions:
                 continue
             yield entry
@@ -141,13 +153,13 @@ def iter_files(
 
 def write_verbose_log(log_file_path: Path) -> None:
     """Записує у файл інформацію про copied/moved файли у verbose-режимі."""
-    with open(log_file_path, "a", encoding="utf-8") as file:
+    with open(log_file_path, "w", encoding="utf-8") as file:
         while True:
             item = verbose_queue.get()
             if item is None:
                 break
             source_path, destination_path = item
-            file.write(f"{source_path} | {destination_path}\n")
+            file.write(f"{source_path} -> {destination_path}\n")
 
 
 def copy_file(
@@ -208,7 +220,7 @@ def move_file(
 def build_destination_path(source_file: Path, target_root: Path) -> Path:
     """Будує цільовий шлях для файла на основі його розширення."""
     if source_file.suffixes:
-        extension_dir = normalize_suffix(source_file.suffixes)
+        extension_dir = get_suffix(source_file)
     else:
         extension_dir = "no_extension"
 
@@ -227,7 +239,7 @@ def build_unique_destination_path(
 ) -> Path:
     """Підбирає унікальне ім'я файла, якщо цільовий шлях вже зайнятий."""
 
-    suffix = normalize_suffix(source_file.suffixes)
+    suffix = get_suffix(source_file)
     full_suffix = f".{suffix}" if suffix else ""
 
     name = source_file.name
@@ -311,7 +323,6 @@ def main() -> None:
 
     if verbose:
         verbose_log_path = Path("./log_file.txt")
-        verbose_log_path.touch(exist_ok=True)
         verbose_thread = Thread(target=write_verbose_log, args=(verbose_log_path,))
         verbose_thread.start()
 
@@ -354,6 +365,8 @@ def main() -> None:
         verbose_queue.put(None)
         verbose_thread.join()
 
+    if args.mode == "move":
+        shutil.rmtree(source_root)
     print(
         f"Файлів сокпійовано/переміщено: {stats.counter}\n"
         f"Помилок при копіювані: {stats.error}"
